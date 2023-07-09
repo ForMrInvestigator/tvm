@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>TVM WASM demo</title>
+    <meta charset="utf-8">
+</head>
+<body>
+<h1>TVM WASM demo</h1>
+<img id="target" src="logo.png">
+<p id="label">the answer is </p>
+
+<script type="module">
+    import init, {Tensor, pipeline, set_console_hook} from "./pkg/wasm_graph.js";
+    import {LABELS} from "./label.js";
+
+    init().then(async () => {
+        set_console_hook();
+        const ctx = document.createElement('canvas')
+            // const ctx = canvas
+            .getContext('2d', {
+                willReadFrequently: true,
+                desynchronized: true
+            });
+        var image = document.getElementById('target');
+        [ctx.canvas.height, ctx.canvas.width] = [image.height, image.width]
+        ctx.drawImage(image, 0, 0);
+        let counts = 10;
+        let i = 0;
+        let prediction;
+        let costs = [];
+        let graph = await (await fetch("lib/graph.json")).text();
+        let params = new Uint8Array(await (await fetch("lib/graph.params")).arrayBuffer());
+
+        // console.log(graph, params);
+
+        while (i < counts) {
+            i++;
+            let startTime = performance.now();
+            prediction = pipeline(graph, params,
+                Tensor.new(
+                    [ctx.canvas.width, ctx.canvas.height, 4],
+                    ctx.getImageData(0, 0, ctx.canvas.width, ctx.canvas.height,).data
+                ));
+            costs.push(performance.now() - startTime);
+        }
+
+        console.log(prediction.data());
+        let label = 0;
+        let max = 0;
+        prediction.data().forEach((x, idx) => {
+            if (x > max) {
+                label = idx;
+                max = x;
+            }
+        })
+        document.getElementById("label").textContent = `Label: ${LABELS.at(label)}, Confidence: ${(max * 100).toFixed(0.2)}%, pipeline cost ${costs} milliseconds`;
+    });
+
+</script>
+</body>
+</html>
