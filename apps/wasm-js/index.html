@@ -41,7 +41,9 @@
                     [ctx.canvas.width, ctx.canvas.height, 4],
                     ctx.getImageData(0, 0, ctx.canvas.width, ctx.canvas.height,).data
                 ));
-            costs.push(performance.now() - startTime);
+            let cost = performance.now() - startTime;
+            console.log(cost);
+            costs.push(cost);
         }
 
         console.log(prediction.data());

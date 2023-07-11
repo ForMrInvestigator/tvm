@@ -1,7 +1,8 @@
-use wasm_bindgen::prelude::*;
+extern crate web_sys;
+
 use ndarray::{Array, ArrayD};
-
-
+use wasm_bindgen::prelude::*;
+use web_sys::console;
 
 #[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -14,10 +15,7 @@ pub struct Tensor {
 #[allow(dead_code)]
 impl Tensor {
     pub fn new(shape: Vec<usize>, data: Vec<f32>) -> Self {
-        Tensor {
-            shape,
-            data,
-        }
+        Tensor { shape, data }
     }
 
     pub fn ndim(&self) -> usize {
@@ -42,5 +40,22 @@ impl From<ArrayD<f32>> for Tensor {
 impl Into<ArrayD<f32>> for Tensor {
     fn into(self) -> ArrayD<f32> {
         Array::from_shape_vec(self.shape(), self.data().into()).unwrap()
+    }
+}
+
+pub struct Timer<'a> {
+    name: &'a str,
+}
+
+impl<'a> Timer<'a> {
+    pub fn new(name: &'a str) -> Timer<'a> {
+        console::time_with_label(name);
+        Timer { name }
+    }
+}
+
+impl<'a> Drop for Timer<'a> {
+    fn drop(&mut self) {
+        console::time_end_with_label(self.name);
     }
 }

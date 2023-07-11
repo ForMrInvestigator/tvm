@@ -27,13 +27,12 @@ license = "Apache-2.0"
 keywords = ["wasm", "machine learning", "tvm"]
 
 [profile.release]
-debug = true
+strip = "debuginfo"
 opt-level = 3
 lto = true
 
 [package.metadata.wasm-pack.profile.profiling]
-# previously had just ['-O4']
-wasm-opt = ['-O4', '-g']
+wasm-opt = ['-O3', '-g']
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -49,3 +48,7 @@ lazy_static = "1.1.1"
 wasm-bindgen = "*"
 console_error_panic_hook = "0.1.7"
 image = "0.24.6"
+wee_alloc = "0.4.5"
+console_log = "1.0.0"
+log = "0.4.19"
+web-sys = "*"
