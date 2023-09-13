@@ -375,7 +375,7 @@ set(USE_CCACHE AUTO)
 # - AUTO:
 #   - Find libbacktrace from system paths.
 #   - If not found, fallback to COMPILE on Linux or MacOS, fallback to OFF on Windows or other platforms.
-set(USE_LIBBACKTRACE AUTO)
+set(USE_LIBBACKTRACE OFF)
 
 # Whether to install a signal handler to print a backtrace on segfault.
 # Need to have USE_LIBBACKTRACE enabled.
