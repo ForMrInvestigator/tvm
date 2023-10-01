@@ -20,6 +20,7 @@ import tvm.testing
 from tvm.meta_schedule.postproc import RewriteParallelVectorizeUnroll
 from tvm.script import tir as T
 from tvm.tir.schedule import Schedule
+from tvm.tir.schedule.testing import assert_structural_equal_ignore_global_symbol
 
 # pylint: disable=invalid-name,no-member,line-too-long,too-many-nested-blocks,no-self-argument,not-callable,misplaced-comparison-constant
 # fmt: off
@@ -62,9 +63,9 @@ def Move_PUV0(a: T.handle, b: T.handle) -> None:
                         vj = T.axis.spatial(1024, i0_j0_fused % 64 * 32 + j1 * 8 + j2)
                         vk = T.axis.spatial(1024, k0 * 32 + k1_fused)
                         T.where(
-                            i0_j0_fused // 64 * 16 + i1 * 4 + i2 < 1024
-                            and i0_j0_fused % 64 * 32 + j1 * 8 + j2 < 1024
-                            and k0 * 32 + k1_fused < 1024
+                            i0_j0_fused < 4064
+                            and i0_j0_fused % 64 < 32
+                            and k0 < 32
                         )
                         T.reads([A[vi, vj, vk]])
                         T.writes([B[vi, vj, vk]])
@@ -195,14 +196,14 @@ def test_vectorize_inner_loop():
     sch = Schedule(before_matmul_vectorize)
     rule = RewriteParallelVectorizeUnroll()
     assert rule.apply(sch)
-    tvm.ir.assert_structural_equal(sch.mod["main"], after_matmul_vectorize)
+    assert_structural_equal_ignore_global_symbol(sch.mod["main"], after_matmul_vectorize)
 
 
 def test_parallel_vectorize_add():
     sch = Schedule(before_postproc_add)
     rule = RewriteParallelVectorizeUnroll()
     assert rule.apply(sch)
-    tvm.ir.assert_structural_equal(sch.mod["main"], after_postproc_add)
+    assert_structural_equal_ignore_global_symbol(sch.mod["main"], after_postproc_add)
 
 
 def test_no_unroll_for_spatial_block():
@@ -264,7 +265,7 @@ def test_no_unroll_for_spatial_block():
     sch = Schedule(layer_norm)
     assert postproc.apply(sch)
     mod = tvm.tir.transform.Simplify()(sch.mod)
-    tvm.ir.assert_structural_equal(mod["main"], expected)
+    assert_structural_equal_ignore_global_symbol(mod["main"], expected)
 
 
 if __name__ == "__main__":

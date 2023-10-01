@@ -119,14 +119,12 @@ Allocator* MemoryManager::GetOrCreateAllocator(Device dev, AllocatorType type) {
     std::unique_ptr<Allocator> alloc;
     switch (type) {
       case kNaive: {
-        VLOG(1) << "New naive allocator for " << DeviceName(dev.device_type) << "(" << dev.device_id
-                << ")";
+        VLOG(1) << "New naive allocator for " << dev;
         alloc.reset(new NaiveAllocator(dev));
         break;
       }
       case kPooled: {
-        VLOG(1) << "New pooled allocator for " << DeviceName(dev.device_type) << "("
-                << dev.device_id << ")";
+        VLOG(1) << "New pooled allocator for " << dev;
         alloc.reset(new PooledAllocator(dev));
         break;
       }
@@ -139,9 +137,9 @@ Allocator* MemoryManager::GetOrCreateAllocator(Device dev, AllocatorType type) {
   }
   auto alloc = m->allocators_.at(dev).get();
   if (alloc->type() != type) {
-    LOG(WARNING) << "The type of existing allocator for " << DeviceName(dev.device_type) << "("
-                 << dev.device_id << ") is different from the request type (" << alloc->type()
-                 << " vs " << type << ")";
+    LOG(WARNING) << "The type of existing allocator for " << dev
+                 << " is different from the request type (" << alloc->type() << " vs " << type
+                 << ")";
   }
   return alloc;
 }
@@ -151,8 +149,7 @@ Allocator* MemoryManager::GetAllocator(Device dev) {
   std::lock_guard<std::mutex> lock(m->mu_);
   auto it = m->allocators_.find(dev);
   if (it == m->allocators_.end()) {
-    LOG(FATAL) << "Allocator for " << DeviceName(dev.device_type) << "(" << dev.device_id
-               << ") has not been created yet.";
+    LOG(FATAL) << "Allocator for " << dev << " has not been created yet.";
   }
   return it->second.get();
 }
@@ -168,6 +165,24 @@ NDArray Allocator::Empty(std::vector<int64_t> shape, DLDataType dtype, DLDevice 
   container->manager_ctx = reinterpret_cast<void*>(buffer);
   container->dl_tensor.data = buffer->data;
   return NDArray(GetObjectPtr<Object>(container));
+}
+
+Buffer Allocator::Alloc(Device dev, int ndims, int64_t* shape, DLDataType type_hint,
+                        const std::string& mem_scope) {
+  if (mem_scope.empty() || mem_scope == "global") {
+    // by default, we can always redirect to the flat memory allocations
+    std::vector<int64_t> s;
+    for (int i = 0; i < ndims; ++i) {
+      s.push_back(shape[i]);
+    }
+    NDArray::Container container(nullptr, s, type_hint, dev);
+    size_t size = GetDataSize(container.dl_tensor);
+    size_t alignment = GetDataAlignment(container.dl_tensor);
+    return Alloc(size, alignment, type_hint);
+  }
+  LOG(FATAL) << "Allocator cannot allocate data space with "
+             << "specified memory scope: " << mem_scope;
+  return {};
 }
 
 }  // namespace vm

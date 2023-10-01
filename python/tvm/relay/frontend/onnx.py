@@ -1161,6 +1161,24 @@ class BiasGelu(OnnxOpConverter):
         return Gelu._impl_v1([inp], attr, params)
 
 
+class Mish(OnnxOpConverter):
+    """Operator converter for Mish from Microsoft onnxruntime contrib opset.
+
+    mish(x) = x * tanh(softplus(x)) = x * tanh(ln(1 + e^{x}))
+    """
+
+    @classmethod
+    def _impl_v18(cls, inputs, attr, params):
+        x = inputs[0]
+        # Declare const
+        const_dtype = infer_type(x).checked_type.dtype
+        one = _expr.const(1.0, dtype=const_dtype)
+
+        # Compute Mish
+        term1 = _op.log(one + _op.exp(x))
+        return _op.multiply(x, _op.tanh(term1))
+
+
 class LayerNormalization(OnnxOpConverter):
     """Operator converter for LayerNormalization from Microsoft onnxruntime contrib opset."""
 
@@ -4492,14 +4510,19 @@ class If(OnnxOpConverter):
         # Add constants from both branches to parent graph.
         graph_scope._params.update(then_graph._params)
         graph_scope._nodes.update(then_graph._nodes)
+        graph_scope._params.update(else_graph._params)
+        graph_scope._nodes.update(else_graph._nodes)
+
         then_free_vars = analysis.free_vars(then_expr)
         for var in then_free_vars:
             graph_scope._nodes.update({var.name_hint: var})
-        graph_scope._params.update(else_graph._params)
-        graph_scope._nodes.update(else_graph._nodes)
+            if var.name_hint in graph_scope._inputs:
+                graph_scope._inputs.update({var.name_hint: var})
         else_free_vars = analysis.free_vars(else_expr)
         for var in else_free_vars:
             graph_scope._nodes.update({var.name_hint: var})
+            if var.name_hint in graph_scope._inputs:
+                graph_scope._inputs.update({var.name_hint: var})
 
         # Sometimes pytorch to onnx will insert silly if statements that produce dynamic ranks.
         # Often these dont contribute anything. If we see a dynamic rank output, try to unify
@@ -6536,6 +6559,7 @@ def _get_convert_map(opset):
         "Gelu": Gelu.get_converter(opset),
         "FastGelu": FastGelu.get_converter(opset),
         "BiasGelu": BiasGelu.get_converter(opset),
+        "Mish": Mish.get_converter(opset),
         "LayerNormalization": LayerNormalization.get_converter(opset),
         # TODO: We need a better way to handle different domains, in case
         # of name collisions. EmbedLayerNormalization, SkipLayerNormalization, and Attention
