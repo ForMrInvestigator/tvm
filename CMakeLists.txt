@@ -343,6 +343,7 @@ list(APPEND COMPILER_SRCS "src/target/datatype/myfloat/myfloat.cc")
 tvm_file_glob(GLOB RUNTIME_SRCS
   src/runtime/*.cc
   src/runtime/vm/*.cc
+  src/runtime/memory/*.cc
   src/runtime/disco/*.cc
   src/runtime/minrpc/*.cc
 )
@@ -565,6 +566,7 @@ add_library(tvm_objs OBJECT ${COMPILER_SRCS})
 add_library(tvm_runtime_objs OBJECT ${RUNTIME_SRCS})
 add_library(tvm_libinfo_objs OBJECT ${LIBINFO_FILE})
 
+include(GNUInstallDirs)
 if(NOT BUILD_DUMMY_LIBTVM)
   add_library(tvm SHARED $<TARGET_OBJECTS:tvm_objs> $<TARGET_OBJECTS:tvm_runtime_objs> $<TARGET_OBJECTS:tvm_libinfo_objs>)
 else()
@@ -782,7 +784,6 @@ else(INSTALL_DEV)
     )
 endif(INSTALL_DEV)
 
-include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 set(PROJECT_CONFIG_CONTENT "@PACKAGE_INIT@\n")
 string(APPEND PROJECT_CONFIG_CONTENT "include(CMakeFindDependencyMacro)\n")
