@@ -15,14 +15,17 @@
 # specific language governing permissions and limitations
 # under the License.
 """Util to invoke C/C++ compilers in the system."""
-# pylint: disable=invalid-name
-import sys
-import shutil
 import os
+import shutil
 import subprocess
 
-from . import utils as _utils, tar as _tar
+# pylint: disable=invalid-name
+import sys
+from typing import Dict
+
 from .._ffi.base import py_str
+from . import tar as _tar
+from . import utils as _utils
 
 
 def _is_linux_like():
@@ -80,7 +83,7 @@ def create_shared(output, objects, options=None, cc=None, cwd=None, ccache_env=N
         The compiler command.
 
     cwd : Optional[str]
-        The urrent working directory.
+        The current working directory.
 
     ccache_env : Optional[Dict[str, str]]
         The environment variable for ccache. Set `None` to disable ccache by default.
@@ -170,10 +173,55 @@ def create_executable(output, objects, options=None, cc=None, cwd=None, ccache_e
 
     if _is_linux_like():
         _linux_compile(output, objects, options, cc, cwd, ccache_env)
-    elif sys.platform == "win32":
+    elif _is_windows_like():
         _windows_compile(output, objects, options, cwd, ccache_env)
     else:
         raise ValueError("Unsupported platform")
+
+
+def get_global_symbol_section_map(path, *, nm=None) -> Dict[str, str]:
+    """Get global symbols from a library via nm -g
+
+    Parameters
+    ----------
+    path : str
+        The library path
+
+    nm: str
+        The path to nm command
+
+    Returns
+    -------
+    symbol_section_map: Dict[str, str]
+        A map from defined global symbol to their sections
+    """
+    if nm is None:
+        if not _is_linux_like():
+            raise ValueError("Unsupported platform")
+        nm = "nm"
+
+    symbol_section_map = {}
+
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"{path} does not exist")
+
+    cmd = [nm, "-gU", path]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    (out, _) = proc.communicate()
+
+    if proc.returncode != 0:
+        msg = "Runtime error:\n"
+        msg += py_str(out)
+        raise RuntimeError(msg)
+
+    for line in py_str(out).split("\n"):
+        data = line.strip().split()
+        if len(data) != 3:
+            continue
+        symbol = data[-1]
+        section = data[-2]
+        symbol_section_map[symbol] = section
+    return symbol_section_map
 
 
 def get_target_by_dump_machine(compiler):
@@ -324,8 +372,11 @@ def _linux_compile(
 
 
 def _windows_compile(output, objects, options, cwd=None, ccache_env=None):
-    cmd = ["clang"]
+    compiler = os.getenv("TVM_WIN_CC", default="clang")
+    win_target = os.getenv("TVM_WIN_TARGET", default="x86_64")
+    cmd = [compiler]
     cmd += ["-O2"]
+    cmd += ["--target=" + win_target]
 
     if output.endswith(".so") or output.endswith(".dll"):
         cmd += ["-shared"]

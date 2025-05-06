@@ -18,6 +18,7 @@
 
 import functools
 import inspect
+import sys
 from numbers import Integral
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -28,8 +29,7 @@ from typing_extensions import Literal
 
 import numpy as np  # type: ignore
 
-from tvm import tir
-from tvm import ir
+from tvm import ir, tir
 from tvm.ir import Type
 from tvm.ir.base import deprecated
 from tvm.runtime import String, convert, ndarray
@@ -82,6 +82,7 @@ from tvm.tir.expr import (
 from tvm.tir.generic import cast
 
 from . import _ffi_api, frame
+from .external_kernel import call_kernel
 
 # pylint: enable=unused-import
 
@@ -520,6 +521,11 @@ def _as_range(dom: Union[ir.Range, List[PrimExpr]]) -> ir.Range:
     if isinstance(dom, ir.Range):
         return dom
     if isinstance(dom, (list, tuple)):
+        from tvm.arith import Analyzer  # pylint: disable=import-outside-toplevel
+
+        extent = Analyzer().simplify(dom[1] - dom[0])
+        if isinstance(extent, tir.IntImm):
+            return ir.Range.from_min_extent(dom[0], extent)
         return ir.Range(dom[0], dom[1])
     if hasattr(dom, "dtype"):
         return ir.Range(IntImm(dom.dtype, 0), dom)
@@ -1241,7 +1247,7 @@ def launch_thread(
     return _ffi_api.LaunchThread(thread, extent)  # type: ignore[attr-defined] # pylint: disable=no-member
 
 
-def env_thread(thread_tag: str) -> IterVar:
+def env_thread(thread_tag: str, dtype: str = "int32") -> IterVar:
     """Bind a var to thread env
 
     Parameters
@@ -1249,19 +1255,23 @@ def env_thread(thread_tag: str) -> IterVar:
     thread_tag : str
         The thread type tag.
 
+    dtype : str
+        The data type of the thread env.
+
     Returns
     -------
     res : IterVar
         The result iteration variable gets bound to the thread env.
 
     """
-    return _ffi_api.EnvThread(thread_tag)  # type: ignore[attr-defined] # pylint: disable=no-member
+    return _ffi_api.EnvThread(thread_tag, dtype)  # type: ignore[attr-defined] # pylint: disable=no-member
 
 
 def buffer_store(
     buffer: Buffer,  # pylint: disable=redefined-outer-name
     value: PrimExpr,
     indices: List[Union[PrimExpr, slice]],
+    predicate: Optional[PrimExpr] = None,
 ) -> None:
     """Buffer store node.
 
@@ -1275,6 +1285,11 @@ def buffer_store(
 
     indices : List[Union[PrimExpr, slice]]
         The indices location to be stored.
+
+    predicate : Optional[PrimExpr]
+        A vector mask of boolean values indicating which lanes of a vector are to be
+        stored. The number lanes of the mask must be equal to the number of lanes in
+        value.
     """
     from tvm.arith import Analyzer  # pylint: disable=import-outside-toplevel
 
@@ -1289,13 +1304,13 @@ def buffer_store(
             if lanes == 1:
                 expr_indices.append(index.start)
             else:
-                expr_indices.append(ramp(index.start, step, int(lanes)))
+                expr_indices.append(ramp(index.start, step, lanes))
         else:
             expr_indices.append(index)
     if isinstance(value, bool) and buffer.dtype == "bool":
         value = IntImm("bool", value)
     return _ffi_api.BufferStore(  # type: ignore[attr-defined] # pylint: disable=no-member
-        buffer, value, expr_indices
+        buffer, value, expr_indices, predicate
     )
 
 
@@ -1408,30 +1423,48 @@ uint16x64 = func_gen(("UInt16x64"))
 uint32x64 = func_gen(("UInt32x64"))
 uint64x64 = func_gen(("UInt64x64"))
 
-float8 = func_gen(("Float8"))
 float16 = func_gen(("Float16"))
 float32 = func_gen(("Float32"))
 float64 = func_gen(("Float64"))
-float8x4 = func_gen(("Float8x4"))
 float16x4 = func_gen(("Float16x4"))
 float32x4 = func_gen(("Float32x4"))
 float64x4 = func_gen(("Float64x4"))
-float8x8 = func_gen(("Float8x8"))
 float16x8 = func_gen(("Float16x8"))
 float32x8 = func_gen(("Float32x8"))
 float64x8 = func_gen(("Float64x8"))
-float8x16 = func_gen(("Float8x16"))
 float16x16 = func_gen(("Float16x16"))
 float32x16 = func_gen(("Float32x16"))
 float64x16 = func_gen(("Float64x16"))
-float8x32 = func_gen(("Float8x32"))
 float16x32 = func_gen(("Float16x32"))
 float32x32 = func_gen(("Float32x32"))
 float64x32 = func_gen(("Float64x32"))
-float8x64 = func_gen(("Float8x64"))
 float16x64 = func_gen(("Float16x64"))
 float32x64 = func_gen(("Float32x64"))
 float64x64 = func_gen(("Float64x64"))
+
+float8_e4m3fn = func_gen(("Float8E4M3FN"))
+float8_e4m3fnx4 = func_gen(("Float8E4M3FNx4"))
+float8_e4m3fnx8 = func_gen(("Float8E4M3FNx8"))
+float8_e4m3fnx16 = func_gen(("Float8E4M3FNx16"))
+float8_e4m3fnx32 = func_gen(("Float8E4M3FNx32"))
+float8_e4m3fnx64 = func_gen(("Float8E4M3FNx64"))
+
+float8_e5m2 = func_gen(("Float8E5M2"))
+float8_e5m2x4 = func_gen(("Float8E5M2x4"))
+float8_e5m2x8 = func_gen(("Float8E5M2x8"))
+float8_e5m2x16 = func_gen(("Float8E5M2x16"))
+float8_e5m2x32 = func_gen(("Float8E5M2x32"))
+float8_e5m2x64 = func_gen(("Float8E5M2x64"))
+
+float4_e2m1fn = func_gen(("Float4E2M1FN"))
+float4_e2m1fnx2 = func_gen(("Float4E2M1FNx2"))
+float4_e2m1fnx4 = func_gen(("Float4E2M1FNx4"))
+float4_e2m1fnx8 = func_gen(("Float4E2M1FNx8"))
+float4_e2m1fnx16 = func_gen(("Float4E2M1FNx16"))
+float4_e2m1fnx32 = func_gen(("Float4E2M1FNx32"))
+float4_e2m1fnx64 = func_gen(("Float4E2M1FNx64"))
+
+bfloat16 = func_gen(("BFloat16"))
 # pylint: enable=invalid-name
 
 
@@ -1663,9 +1696,10 @@ def index_map(
     mapping: Callable,
     *,
     inverse_index_map: Optional[Callable] = None,
+    index_dtype: str = "int64",
 ) -> IndexMap:
     """Create a TIR Index mapping"""
-    return IndexMap.from_func(mapping, inverse_index_map=inverse_index_map)
+    return IndexMap.from_func(mapping, inverse_index_map=inverse_index_map, index_dtype=index_dtype)
 
 
 def target(
@@ -1746,14 +1780,31 @@ class meta_var:  # pylint: disable=invalid-name
 # pylint: disable=invalid-name
 
 
-def _op_wrapper(func):
-    @functools.wraps(func)
-    def wrapped(*args, **kwargs):
-        if "dtype" in kwargs:
-            kwargs.pop("dtype")
-        return func(*args, **kwargs)
+if sys.version_info >= (3, 10):
+    from typing import ParamSpec, TypeVar  # pylint: disable=import-error
 
-    return wrapped
+    T = TypeVar("T")
+    P = ParamSpec("P")
+
+    def _op_wrapper(func: Callable[P, T]) -> Callable[P, T]:
+        @functools.wraps(func)
+        def wrapped(*args, **kwargs) -> T:
+            if "dtype" in kwargs:
+                kwargs.pop("dtype")
+            return func(*args, **kwargs)
+
+        return wrapped
+
+else:
+
+    def _op_wrapper(func):
+        @functools.wraps(func)
+        def wrapped(*args, **kwargs):
+            if "dtype" in kwargs:
+                kwargs.pop("dtype")
+            return func(*args, **kwargs)
+
+        return wrapped
 
 
 abs = _op_wrapper(_tir_op.abs)  # pylint: disable=redefined-builtin
@@ -1832,6 +1883,7 @@ call_cpacked_lowered = _op_wrapper(_tir_op.call_cpacked_lowered)
 tvm_tuple = _op_wrapper(_tir_op.tvm_tuple)
 tvm_struct_set = _op_wrapper(_tir_op.tvm_struct_set)
 tvm_struct_get = _tir_op.tvm_struct_get
+tvm_thread_invariant = _op_wrapper(_tir_op.tvm_thread_invariant)
 tvm_thread_allreduce = _op_wrapper(_tir_op.tvm_thread_allreduce)
 tvm_load_matrix_sync = _op_wrapper(_tir_op.tvm_load_matrix_sync)
 tvm_mma_sync = _op_wrapper(_tir_op.tvm_mma_sync)
@@ -1850,6 +1902,10 @@ ptx_init_barrier_thread_count = _op_wrapper(_tir_op.ptx_init_barrier_thread_coun
 ptx_arrive_barrier = _op_wrapper(_tir_op.ptx_arrive_barrier)
 ptx_arrive_barrier_expect_tx = _op_wrapper(_tir_op.ptx_arrive_barrier_expect_tx)
 ptx_wait_barrier = _op_wrapper(_tir_op.ptx_wait_barrier)
+make_filled_simdgroup_matrix = _op_wrapper(_tir_op.make_filled_simdgroup_matrix)
+simdgroup_load = _op_wrapper(_tir_op.simdgroup_load)
+simdgroup_store = _op_wrapper(_tir_op.simdgroup_store)
+simdgroup_multiply_accumulate = _op_wrapper(_tir_op.simdgroup_multiply_accumulate)
 create_barriers = _op_wrapper(_tir_op.create_barriers)
 assume = _op_wrapper(_tir_op.assume)
 undef = _op_wrapper(_tir_op.undef)
@@ -1857,6 +1913,12 @@ TVMBackendAllocWorkspace = _op_wrapper(_tir_op.TVMBackendAllocWorkspace)
 TVMBackendFreeWorkspace = _op_wrapper(_tir_op.TVMBackendFreeWorkspace)
 start_profile_intrinsic = _op_wrapper(_tir_op.start_profile_intrinsic)
 end_profile_intrinsic = _op_wrapper(_tir_op.end_profile_intrinsic)
+anylist_getitem = _op_wrapper(_tir_op.anylist_getitem)
+anylist_resetitem = _op_wrapper(_tir_op.anylist_resetitem)
+anylist_setitem_call_packed = _op_wrapper(_tir_op.anylist_setitem_call_packed)
+anylist_setitem_call_cpacked = _op_wrapper(_tir_op.anylist_setitem_call_cpacked)
+vscale = _op_wrapper(_tir_op.vscale)
+ignore_loop_partition = _op_wrapper(_tir_op.ignore_loop_partition)
 
 
 def _dtype_forward(func):
@@ -1885,6 +1947,8 @@ mma_fill = _dtype_forward(_tir_op.mma_fill)
 vectorlow = _dtype_forward(_tir_op.vectorlow)
 vectorhigh = _dtype_forward(_tir_op.vectorhigh)
 vectorcombine = _dtype_forward(_tir_op.vectorcombine)
+get_active_lane_mask = _dtype_forward(_tir_op.get_active_lane_mask)
+dp4a = _dtype_forward(_tir_op.dp4a)
 
 
 broadcast = Broadcast
@@ -1895,9 +1959,7 @@ tvm_call_cpacked = call_cpacked
 tvm_call_packed_lowered = call_packed_lowered
 tvm_call_cpacked_lowered = call_cpacked_lowered
 
-
 # pylint: enable=invalid-name
-
 
 __all__ = [
     "int8",
@@ -1948,30 +2010,44 @@ __all__ = [
     "uint16x64",
     "uint32x64",
     "uint64x64",
-    "float8",
+    "float8_e4m3fn",
+    "float8_e5m2",
+    "float4_e2m1fn",
     "float16",
     "float32",
     "float64",
-    "float8x4",
+    "float4_e2m1fnx2",
+    "float8_e4m3fnx4",
+    "float8_e5m2x4",
+    "float4_e2m1fnx4",
     "float16x4",
     "float32x4",
     "float64x4",
-    "float8x8",
+    "float8_e4m3fnx8",
+    "float8_e5m2x8",
+    "float4_e2m1fnx8",
     "float16x8",
     "float32x8",
     "float64x8",
-    "float8x16",
+    "float8_e4m3fnx16",
+    "float8_e5m2x16",
+    "float4_e2m1fnx16",
     "float16x16",
     "float32x16",
     "float64x16",
-    "float8x32",
+    "float8_e4m3fnx32",
+    "float8_e5m2x32",
+    "float4_e2m1fnx32",
     "float16x32",
     "float32x32",
     "float64x32",
-    "float8x64",
+    "float8_e4m3fnx64",
+    "float8_e5m2x64",
+    "float4_e2m1fnx64",
     "float16x64",
     "float32x64",
     "float64x64",
+    "bfloat16",
     "buffer",
     "buffer_decl",
     "prim_func",
@@ -2104,6 +2180,7 @@ __all__ = [
     "tvm_tuple",
     "tvm_struct_set",
     "tvm_struct_get",
+    "tvm_thread_invariant",
     "tvm_thread_allreduce",
     "tvm_load_matrix_sync",
     "tvm_mma_sync",
@@ -2127,12 +2204,17 @@ __all__ = [
     "ptx_arrive_barrier",
     "ptx_arrive_barrier_expect_tx",
     "ptx_wait_barrier",
+    "make_filled_simdgroup_matrix",
+    "simdgroup_load",
+    "simdgroup_store",
+    "simdgroup_multiply_accumulate",
     "create_barriers",
     "mma_store",
     "mma_fill",
     "vectorlow",
     "vectorhigh",
     "vectorcombine",
+    "dp4a",
     "assume",
     "undef",
     "tvm_call_packed",
@@ -2144,6 +2226,10 @@ __all__ = [
     "start_profile_intrinsic",
     "end_profile_intrinsic",
     "meta_var",
+    "anylist_getitem",
+    "anylist_resetitem",
+    "anylist_setitem_call_packed",
+    "anylist_setitem_call_cpacked",
     "llvm_lookup_intrinsic_id",
     "type_annotation",
     "broadcast",
@@ -2189,4 +2275,8 @@ __all__ = [
     "IterVar",
     "CommReducer",
     "Range",
+    "vscale",
+    "get_active_lane_mask",
+    "call_kernel",
+    "ignore_loop_partition",
 ]

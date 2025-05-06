@@ -27,13 +27,14 @@ def vector_add(A: T.Buffer((16), "float32"), B: T.Buffer((32), "float32")) -> No
     tx = T.env_thread("threadIdx.x")
     T.launch_thread(bx, 1)
     T.launch_thread(tx, 32)
-    A_local = T.Buffer((32), "float32", scope="local")
-
     with T.block():
-        T.reads(A[0:16])
-        T.writes(A_local[0:32])
-        A_local[tx] = T.if_then_else(tx % 2 == 0, A[tx // 2], T.float32(0), dtype="float32")
-        B[tx] = A_local[tx] + 1.0
+        A_local = T.alloc_buffer((32), "float32", scope="local")
+
+        with T.block():
+            T.reads(A[0:16])
+            T.writes(A_local[0:32])
+            A_local[tx] = T.if_then_else(tx % 2 == 0, A[tx // 2], T.float32(0), dtype="float32")
+            B[tx] = A_local[tx] + 1.0
 
 
 @tvm.testing.requires_cuda
@@ -45,7 +46,7 @@ def test_inject_ptx_intrin():
         # Require at least SM80
         return
     with tvm.transform.PassContext(config={"tir.ptx_ldg32": True}):
-        mod = tvm.build(f, target="cuda")
+        mod = tvm.compile(f, target="cuda")
     A_np = np.random.rand(16).astype("float32")
     B_np = np.zeros((32)).astype("float32")
     dev = tvm.cuda(0)

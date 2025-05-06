@@ -98,7 +98,7 @@ or
 
 the same applies to the other images (``./docker/Dockerfile.*```).
 
-The command ``./docker/build.sh image_name COMMANDS`` is almost equivelant to
+The command ``./docker/build.sh image_name COMMANDS`` is almost equivalent to
 ``./docker/bash.sh image_name COMMANDS`` but in the case of ``bash.sh``
 a build attempt is not done.
 
@@ -110,7 +110,7 @@ tasks.
 - lint the python codes
 
   ```bash
-  ./docker/build.sh tvm.ci_lint make pylint
+  ./docker/build.sh ci_lint make pylint
   ```
 
 - build codes with CUDA support

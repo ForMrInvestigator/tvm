@@ -270,6 +270,7 @@ def callback_libdevice_path(arch):
         return ""
 
 
+@tvm._ffi.register_func("tvm.contrib.nvcc.get_compute_version")
 def get_target_compute_version(target=None):
     """Utility function to get compute capability of compilation target.
 
@@ -290,8 +291,16 @@ def get_target_compute_version(target=None):
     # 2. Target.current()
     target = target or Target.current()
     if target and target.arch:
-        major, minor = target.arch.split("_")[1]
-        return major + "." + minor
+        arch = target.arch.split("_")[1]
+        if len(arch) < 2:
+            raise ValueError(f"The arch is not expected {target.arch}")
+        if arch[-1].isalpha():
+            # This is for arch like "sm_90a"
+            suffix = arch[-1]
+            major = arch[:-2]
+            minor = arch[-2]
+            return major + "." + minor + "." + suffix
+        return arch[:-1] + "." + arch[-1]
 
     # 3. GPU compute version
     if tvm.cuda(0).exist:
@@ -406,6 +415,7 @@ def have_cudagraph():
         return False
 
 
+@tvm._ffi.register_func("tvm.contrib.nvcc.supports_bf16")
 def have_bf16(compute_version):
     """Either bf16 support is provided in the compute capability or not
 
@@ -421,6 +431,7 @@ def have_bf16(compute_version):
     return False
 
 
+@tvm._ffi.register_func("tvm.contrib.nvcc.supports_fp8")
 def have_fp8(compute_version):
     """Whether fp8 support is provided in the specified compute capability or not
 
@@ -434,5 +445,21 @@ def have_fp8(compute_version):
     if major == 8 and minor == 9:
         return True
     if major >= 9:
+        return True
+    return False
+
+
+@tvm._ffi.register_func("tvm.contrib.nvcc.supports_fp4")
+def have_fp4(compute_version):
+    """Whether fp4 support is provided in the specified compute capability or not
+
+    Parameters
+    ----------
+    compute_version : str
+        GPU capability
+    """
+    major, minor = parse_compute_version(compute_version)
+    # fp4 is suppored in Blackwell (10.0) or later architectures.
+    if major == 10 and minor == 0:
         return True
     return False

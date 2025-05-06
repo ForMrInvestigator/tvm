@@ -69,7 +69,7 @@ TVM_DLL int TVMWasmFuncCreateFromCFunc(void* resource_handle, TVMFunctionHandle*
  * \param type_codes The type codes of the arguments
  * \param num_args Number of arguments.
  * \param ret The return value handle.
- * \param resource_handle The handle additional resouce handle from fron-end.
+ * \param resource_handle The handle additional resource handle from front-end.
  * \return 0 if success, -1 if failure happens, set error via TVMAPISetLastError.
  */
 extern int TVMWasmPackedCFunc(TVMValue* args, int* type_codes, int num_args, TVMRetValueHandle ret,
@@ -148,8 +148,15 @@ class AsyncLocalSession : public LocalSession {
         int code = args[0];
         TVMRetValue rv;
         rv = args[1];
-        this->EncodeReturn(std::move(rv),
-                           [&](TVMArgs encoded_args) { callback(RPCCode::kReturn, encoded_args); });
+        if (code == static_cast<int>(RPCCode::kReturn)) {
+          this->EncodeReturn(std::move(rv), [&](TVMArgs encoded_args) {
+            callback(RPCCode::kReturn, encoded_args);
+          });
+        } else {
+          // for exception, we can pass through as since this is just normal encoding.
+          ICHECK_EQ(code, static_cast<int>(RPCCode::kException));
+          callback(RPCCode::kException, args);
+        }
       });
 
       TVMRetValue temp;

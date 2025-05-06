@@ -27,6 +27,7 @@
 #include <tvm/runtime/c_runtime_api.h>
 #include <tvm/runtime/logging.h>
 
+#include <cstring>
 #include <string>
 #include <type_traits>
 
@@ -55,8 +56,17 @@ class DataType {
     kFloat = kDLFloat,
     kHandle = TVMArgTypeCode::kTVMOpaqueHandle,
     kBFloat = kDLBfloat,
-    kE4M3Float = 6U,
-    kE5M2Float = 7U,
+    kFloat8_e3m4 = kDLFloat8_e3m4,
+    kFloat8_e4m3 = kDLFloat8_e4m3,
+    kFloat8_e4m3b11fnuz = kDLFloat8_e4m3b11fnuz,
+    kFloat8_e4m3fn = kDLFloat8_e4m3fn,
+    kFloat8_e4m3fnuz = kDLFloat8_e4m3fnuz,
+    kFloat8_e5m2 = kDLFloat8_e5m2,
+    kFloat8_e5m2fnuz = kDLFloat8_e5m2fnuz,
+    kFloat8_e8m0fnu = kDLFloat8_e8m0fnu,
+    kFloat6_e2m3fn = kDLFloat6_e2m3fn,
+    kFloat6_e3m2fn = kDLFloat6_e3m2fn,
+    kFloat4_e2m1fn = kDLFloat4_e2m1fn,
     kCustomBegin = 129
   };
   /*! \brief default constructor */
@@ -71,16 +81,23 @@ class DataType {
    * \param code The type code.
    * \param bits The number of bits in the type.
    * \param lanes The number of lanes.
+   * \param is_scalable Whether the data type is scalable.
    */
-  DataType(int code, int bits, int lanes) {
+  DataType(int code, int bits, int lanes, bool is_scalable = false) {
     data_.code = static_cast<uint8_t>(code);
     data_.bits = static_cast<uint8_t>(bits);
-    data_.lanes = static_cast<uint16_t>(lanes);
+    if (is_scalable) {
+      ICHECK(lanes > 1) << "Invalid value for vscale factor" << lanes;
+    }
+    data_.lanes = is_scalable ? static_cast<uint16_t>(-lanes) : static_cast<uint16_t>(lanes);
     if (code == kBFloat) {
       ICHECK_EQ(bits, 16);
     }
-    if (code == kE4M3Float || code == kE5M2Float) {
+    if (code == kFloat8_e4m3fn || code == kFloat8_e5m2) {
       ICHECK_EQ(bits, 8);
+    }
+    if (code == kFloat4_e2m1fn) {
+      ICHECK_EQ(bits, 4);
     }
   }
   /*! \return The type code. */
@@ -90,19 +107,44 @@ class DataType {
   /*! \return number of bytes to store each scalar. */
   int bytes() const { return (bits() + 7) / 8; }
   /*! \return number of lanes in the data. */
-  int lanes() const { return static_cast<int>(data_.lanes); }
+  int lanes() const {
+    int lanes_as_int = static_cast<int16_t>(data_.lanes);
+    if (lanes_as_int < 0) {
+      LOG(FATAL) << "Can't fetch the lanes of a scalable vector at a compile time.";
+    }
+    return lanes_as_int;
+  }
+  /*! \return the integer multiplier of vscale in a scalable vector. */
+  int vscale_factor() const {
+    int lanes_as_int = static_cast<int16_t>(data_.lanes);
+    if (lanes_as_int >= -1) {
+      LOG(FATAL) << "A fixed length vector doesn't have a vscale factor.";
+    }
+    return -lanes_as_int;
+  }
+  /*! \return get vscale factor or lanes depending on scalability of the vector. */
+  int get_lanes_or_vscale_factor() const {
+    return is_scalable_vector() ? vscale_factor() : lanes();
+  }
   /*! \return whether type is a scalar type. */
-  bool is_scalar() const { return lanes() == 1; }
+  bool is_scalar() const { return !is_scalable_vector() && lanes() == 1; }
   /*! \return whether type is a scalar type. */
   bool is_bool() const { return code() == DataType::kUInt && bits() == 1; }
   /*! \return whether type is a float type. */
   bool is_float() const { return code() == DataType::kFloat; }
+  /*! \return whether type is a bfloat type. */
+  bool is_bfloat() const { return code() == DataType::kBFloat; }
   /*! \return whether type is a float8 type. */
   bool is_float8() const {
-    return (code() == DataType::kFloat || code() == DataType::kE4M3Float ||
-            code() == DataType::kE5M2Float) &&
+    return (code() == DataType::kFloat || code() == DataType::kFloat8_e4m3fn ||
+            code() == DataType::kFloat8_e5m2) &&
            bits() == 8;
   }
+  /*! \return whether type is a float4 type. */
+  bool is_float4() const { return code() == DataType::kFloat4_e2m1fn && bits() == 4; }
+  bool is_float8_e4m3fn() const { return (code() == DataType::kFloat8_e4m3fn && bits() == 8); }
+  bool is_float8_e5m2() const { return (code() == DataType::kFloat8_e5m2 && bits() == 8); }
+  bool is_float4_e2m1fn() const { return (code() == DataType::kFloat4_e2m1fn && bits() == 4); }
   /*! \return whether type is a float16 type. */
   bool is_float16() const { return is_float() && bits() == 16; }
   /*! \return whether type is a bfloat16 type. */
@@ -114,9 +156,18 @@ class DataType {
   /*! \return whether type is a handle type. */
   bool is_handle() const { return code() == DataType::kHandle && !is_void(); }
   /*! \return whether type is a vector type. */
+  bool is_scalable_or_fixed_length_vector() const {
+    int encoded_lanes = static_cast<int16_t>(data_.lanes);
+    return (encoded_lanes < -1) || (1 < encoded_lanes);
+  }
+  /*! \return Whether the type is a fixed length vector. */
+  bool is_fixed_length_vector() const { return static_cast<int16_t>(data_.lanes) > 1; }
+  /*! \return Whether the type is a scalable vector. */
+  bool is_scalable_vector() const { return static_cast<int16_t>(data_.lanes) < -1; }
+  /*! \return whether type is a vector type. */
   bool is_vector() const { return lanes() > 1; }
   /*! \return whether type is a bool vector type. */
-  bool is_vector_bool() const { return is_vector() && bits() == 1; }
+  bool is_vector_bool() const { return is_scalable_or_fixed_length_vector() && bits() == 1; }
   /*! \return whether type is a Void type. */
   bool is_void() const { return code() == DataType::kHandle && bits() == 0 && lanes() == 0; }
   /*!
@@ -125,6 +176,14 @@ class DataType {
    * \return the result type.
    */
   DataType with_lanes(int lanes) const { return DataType(data_.code, data_.bits, lanes); }
+  /*!
+   * \brief Create a new scalable vector data type by changing the vscale multiplier to a specified
+   * value. We'll use the data_.lanes field for this value. \param vscale_factor The vscale
+   * multiplier. \return A copy of the old DataType with the number of scalable lanes.
+   */
+  DataType with_scalable_vscale_factor(int vscale_factor) const {
+    return DataType(data_.code, data_.bits, -vscale_factor);
+  }
   /*!
    * \brief Create a new data type by change bits to a specified value.
    * \param bits The target number of bits.
@@ -177,10 +236,13 @@ class DataType {
   /*!
    * \brief Construct an uint type.
    * \param bits The number of bits in the type.
-   * \param lanes The number of lanes
+   * \param lanes The number of lanes.
+   * \param is_scalable Whether the data type is scalable.
    * \return The constructed data type.
    */
-  static DataType UInt(int bits, int lanes = 1) { return DataType(kDLUInt, bits, lanes); }
+  static DataType UInt(int bits, int lanes = 1, bool is_scalable = false) {
+    return DataType(kDLUInt, bits, lanes, is_scalable);
+  }
   /*!
    * \brief Construct an float type.
    * \param bits The number of bits in the type.
@@ -200,19 +262,28 @@ class DataType {
    * \param lanes The number of lanes
    * \return The constructed data type.
    */
-  static DataType NVFloat8E4M3(int lanes = 1) { return DataType(kE4M3Float, 8, lanes); }
+  static DataType NVFloat8E4M3(int lanes = 1) { return DataType(kFloat8_e4m3fn, 8, lanes); }
   /*!
    * \brief Construct NV float8 e5m2 datatype.
    * \param lanes The number of lanes
    * \return The constructed data type.
    */
-  static DataType NVFloat8E5M2(int lanes = 1) { return DataType(kE5M2Float, 8, lanes); }
+  static DataType NVFloat8E5M2(int lanes = 1) { return DataType(kFloat8_e5m2, 8, lanes); }
   /*!
-   * \brief Construct a bool type.
+   * \brief Construct NV float4_e2m1fn datatype.
    * \param lanes The number of lanes
    * \return The constructed data type.
    */
-  static DataType Bool(int lanes = 1) { return DataType::UInt(1, lanes); }
+  static DataType NVFloat4E2M1FN(int lanes = 1) { return DataType(kFloat4_e2m1fn, 4, lanes); }
+  /*!
+   * \brief Construct a bool type.
+   * \param lanes The number of lanes.
+   * \param is_scalable Whether the data type is scalable.
+   * \return The constructed data type.
+   */
+  static DataType Bool(int lanes = 1, bool is_scalable = false) {
+    return DataType::UInt(1, lanes, is_scalable);
+  }
   /*!
    * \brief Construct a handle type.
    * \param bits The number of bits in the type.
@@ -250,7 +321,7 @@ inline int GetVectorBytes(DataType dtype) {
   int data_bits = dtype.bits() * dtype.lanes();
   // allow bool to exist
   if (dtype == DataType::Bool() || dtype == DataType::Int(4) || dtype == DataType::UInt(4) ||
-      dtype == DataType::Int(1)) {
+      dtype == DataType::Int(1) || dtype == DataType::NVFloat4E2M1FN()) {
     return 1;
   }
   ICHECK_EQ(data_bits % 8, 0U) << "Need to load/store by multiple of bytes";
@@ -332,10 +403,12 @@ inline const char* DLDataTypeCode2Str(DLDataTypeCode type_code) {
       return "handle";
     case kDLBfloat:
       return "bfloat";
-    case DataType::kE4M3Float:
-      return "e4m3_float";
-    case DataType::kE5M2Float:
-      return "e5m2_float";
+    case DataType::kFloat8_e4m3fn:
+      return "float8_e4m3fn";
+    case DataType::kFloat8_e5m2:
+      return "float8_e5m2";
+    case DataType::kFloat4_e2m1fn:
+      return "float4_e2m1fn";
     default:
       LOG(FATAL) << "unknown type_code=" << static_cast<int>(type_code);
   }
@@ -356,9 +429,15 @@ inline std::ostream& operator<<(std::ostream& os, DLDataType t) {  // NOLINT(*)
     os << "custom[" << GetCustomTypeName(t.code) << "]";
   }
   if (t.code == kTVMOpaqueHandle) return os;
-  os << static_cast<int>(t.bits);
-  if (t.lanes != 1) {
-    os << 'x' << static_cast<int>(t.lanes);
+  int16_t lanes = static_cast<int16_t>(t.lanes);
+  if (t.code != DataType::kFloat8_e4m3fn && t.code != DataType::kFloat8_e5m2 &&
+      t.code != DataType::kFloat4_e2m1fn) {
+    os << static_cast<int>(t.bits);
+  }
+  if (lanes > 1) {
+    os << 'x' << lanes;
+  } else if (lanes < -1) {
+    os << "xvscalex" << -lanes;
   }
   return os;
 }
@@ -390,6 +469,42 @@ inline DLDataType String2DLDataType(std::string s) {
   } else if (s.substr(0, 4) == "uint") {
     t.code = kDLUInt;
     scan = s.c_str() + 4;
+  } else if (s.substr(0, 13) == "float4_e2m1fn") {
+    // Avoid being treated as "float"
+    t.code = DataType::kFloat4_e2m1fn;
+    t.bits = 4;
+    scan = s.c_str() + 13;
+    char* endpt = nullptr;
+    if (*scan == 'x') {
+      t.lanes = static_cast<uint16_t>(strtoul(scan + 1, &endpt, 10));
+      scan = endpt;
+    }
+    ICHECK(scan == s.c_str() + s.length()) << "unknown type " << s;
+    return t;
+  } else if (s.substr(0, 13) == "float8_e4m3fn") {
+    // Avoid being treated as "float"
+    t.code = DataType::kFloat8_e4m3fn;
+    t.bits = 8;
+    scan = s.c_str() + 13;
+    char* endpt = nullptr;
+    if (*scan == 'x') {
+      t.lanes = static_cast<uint16_t>(strtoul(scan + 1, &endpt, 10));
+      scan = endpt;
+    }
+    ICHECK(scan == s.c_str() + s.length()) << "unknown type " << s;
+    return t;
+  } else if (s.substr(0, 11) == "float8_e5m2") {
+    // Avoid being treated as "float"
+    t.code = DataType::kFloat8_e5m2;
+    t.bits = 8;
+    scan = s.c_str() + 11;
+    char* endpt = nullptr;
+    if (*scan == 'x') {
+      t.lanes = static_cast<uint16_t>(strtoul(scan + 1, &endpt, 10));
+      scan = endpt;
+    }
+    ICHECK(scan == s.c_str() + s.length()) << "unknown type " << s;
+    return t;
   } else if (s.substr(0, 5) == "float") {
     t.code = kDLFloat;
     scan = s.c_str() + 5;
@@ -404,13 +519,8 @@ inline DLDataType String2DLDataType(std::string s) {
     return t;
   } else if (s.substr(0, 6) == "bfloat") {
     t.code = DataType::kBFloat;
+    t.bits = 16;
     scan = s.c_str() + 6;
-  } else if (s.substr(0, 10) == "e4m3_float") {
-    t.code = DataType::kE4M3Float;
-    scan = s.c_str() + 10;
-  } else if (s.substr(0, 10) == "e5m2_float") {
-    t.code = DataType::kE5M2Float;
-    scan = s.c_str() + 10;
   } else if (s.substr(0, 6) == "custom") {
     t.code = ParseCustomDatatype(s, &scan);
   } else {
@@ -420,9 +530,14 @@ inline DLDataType String2DLDataType(std::string s) {
   char* xdelim;  // emulate sscanf("%ux%u", bits, lanes)
   uint8_t bits = static_cast<uint8_t>(strtoul(scan, &xdelim, 10));
   if (bits != 0) t.bits = bits;
+  int scalable_multiplier = 1;
+  if (strncmp(xdelim, "xvscale", 7) == 0) {
+    scalable_multiplier = -1;
+    xdelim += 7;
+  }
   char* endpt = xdelim;
   if (*xdelim == 'x') {
-    t.lanes = static_cast<uint16_t>(strtoul(xdelim + 1, &endpt, 10));
+    t.lanes = static_cast<uint16_t>(scalable_multiplier * strtoul(xdelim + 1, &endpt, 10));
   }
   ICHECK(endpt == s.c_str() + s.length()) << "unknown type " << s;
   return t;

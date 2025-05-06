@@ -35,10 +35,65 @@
 
 #include "../../tir/transforms/ir_utils.h"
 #include "literal/cuda_half_t.h"
+#include "literal/cuda_int8_t.h"
 #include "ptx.h"
 
 namespace tvm {
 namespace codegen {
+
+std::string GetFP8Type(DataType type) {
+  std::stringstream stream;
+  int32_t lanes = type.lanes();
+  std::string vec;
+  if (type.is_scalar()) {
+    vec = "";
+  } else if (lanes == 2) {
+    vec = "x2";
+  } else if (lanes == 4) {
+    vec = "x4";
+  } else if (lanes == 8) {
+    vec = "x8";
+  } else if (lanes == 16) {
+    vec = "x16";
+  } else {
+    LOG(FATAL) << "Only support scalar and vector types of width (2, 4, 8, 16) for FP8";
+  }
+  stream << "__nv_fp8";
+  std::string suffix;
+  if (type.code() == DataType::kFloat8_e4m3fn) {
+    suffix = "_e4m3";
+  } else if (type.code() == DataType::kFloat8_e5m2) {
+    suffix = "_e5m2";
+  } else {
+    LOG(FATAL) << "Unsupported FP8 type in CUDA codegen";
+  }
+  stream << vec << suffix;
+  return stream.str();
+}
+
+std::string GetFP4Type(DataType type) {
+  std::stringstream stream;
+  int32_t lanes = type.lanes();
+  std::string vec;
+  if (type.is_scalar()) {
+    vec = "";
+  } else if (lanes == 2) {
+    vec = "x2";
+  } else if (lanes == 4) {
+    vec = "x4";
+  } else {
+    LOG(FATAL) << "Only support scalar and vector types of width (2, 4) for FP8";
+  }
+  stream << "__nv_fp4";
+  std::string suffix;
+  if (type.code() == DataType::kFloat4_e2m1fn) {
+    suffix = "_e2m1";
+  } else {
+    LOG(FATAL) << "Unsupported FP8 type in CUDA codegen";
+  }
+  stream << vec << suffix;
+  return stream.str();
+}
 
 CodeGenCUDA::CodeGenCUDA() { restrict_keyword_ = "__restrict__"; }
 
@@ -102,6 +157,8 @@ std::string CodeGenCUDA::Finish() {
     decl_stream << "#else\n";
     decl_stream << _cuda_half_t_def;
     decl_stream << "#endif\n\n";
+
+    decl_stream << "#include <cuda.h>\n";
     decl_stream << _cuda_half_util;
   }
 
@@ -120,8 +177,24 @@ std::string CodeGenCUDA::Finish() {
   if (enable_fp8_) {
     decl_stream << "#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 890)\n";
     decl_stream << "#include <cuda_fp8.h>\n";
+    decl_stream << "using fp8_e4_t = __nv_fp8_e4m3;\n";
+    decl_stream << "using fp8_e4x2_t = __nv_fp8x2_e4m3;\n";
+    decl_stream << "using fp8_e4x4_t = __nv_fp8x4_e4m3;\n";
+    decl_stream << "struct fp8_e4x8_t {\n fp8_e4_t data[8]; \n};\n";
+    decl_stream << "struct fp8_e4x16_t {\n fp8_e4_t data[16]; \n};\n";
+    decl_stream << "using fp8_e5_t = __nv_fp8_e5m2;\n";
+    decl_stream << "using fp8_e5x2_t = __nv_fp8x2_e5m2;\n";
+    decl_stream << "using fp8_e5x4_t = __nv_fp8x4_e5m2;\n";
+    decl_stream << "struct fp8_e5x8_t {\n fp8_e5_t data[8]; \n};\n";
+    decl_stream << "struct fp8_e5x16_t {\n fp8_e5_t data[16]; \n};\n";
     decl_stream << "#endif\n\n";
   }
+  if (enable_fp4_) {
+    decl_stream << "#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)\n";
+    decl_stream << "#include <cuda_fp4.h>\n";
+    decl_stream << "#endif\n\n";
+  }
+  declare_vector_type_extensions(decl_stream, enable_fp16_, enable_bf16_, enable_fp8_, enable_fp4_);
 
   if (enable_warp_shuffle_) {
     decl_stream << _cuda_warp_intrinsic_util;
@@ -130,6 +203,7 @@ std::string CodeGenCUDA::Finish() {
   if (enable_int8_) {
     decl_stream << "#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 610)\n";
     decl_stream << "#include <sm_61_intrinsics.h>\n";
+    decl_stream << _cuda_int8_t_def;
     decl_stream << "#endif\n";
   }
 
@@ -212,17 +286,12 @@ void CodeGenCUDA::PrintType(DataType t, std::ostream& os) {  // NOLINT(*)
         if (t.is_scalar()) {
           os << "half";
         } else if (lanes <= 8) {
-          // Emit CUDA code to access fp16 vector elements.
-          //
-          // half4 is stored as uint2
-          //
-          // h4.x is emitted as *(half2*)(&(u2.x)).x
-          // h4.y is emitted as *(half2*)(&(u2.x)).y
-          // h4.z is emitted as *(half2*)(&(u2.y)).x
-          // h4.w is emitted as *(half2*)(&(u2.y)).y
-          //
-          ICHECK_EQ(lanes % 2, 0) << "only support even lane for half type";
-          os << "uint" << lanes / 2;
+          ICHECK_EQ(lanes % 2, 0) << "Only support an even number of lanes for half type";
+          if (lanes <= 4) {
+            os << "half" << lanes;
+          } else {
+            os << "uint" << lanes / 2;
+          }
         } else {
           fail = true;
         }
@@ -262,23 +331,32 @@ void CodeGenCUDA::PrintType(DataType t, std::ostream& os) {  // NOLINT(*)
     if (t.is_scalar()) {
       os << "nv_bfloat16";
     } else if (lanes <= 8) {
-      ICHECK_EQ(lanes % 2, 0) << "only support even lane for half type";
-      os << "uint" << lanes / 2;
+      ICHECK_EQ(lanes % 2, 0) << "only support even lane for bfloat16 type";
+      if (lanes <= 4) {
+        os << "nv_bfloat16" << lanes;
+      } else {
+        os << "uint" << lanes / 2;
+      }
     } else {
       fail = true;
     }
     if (!fail) return;
   } else if (t.is_float8()) {
-    if (t.is_scalar()) {
-      os << "unsigned char";  // __nv_fp8_storage_t is an alias of unsigned char
-    } else if (lanes == 2) {
-      os << "unsigned short int";  // __nv_fp8x2_storage_t is an alias of unsigned short
-    } else if (lanes == 4) {
-      os << "unsigned int";  // __nv_fp8x4_storage_t is an alias of unsigned int
+    enable_fp8_ = true;
+    if (t.lanes() <= 4) {
+      os << GetFP8Type(t);
+    } else {
+      os << "uint" << t.lanes() / 4;
+    }
+    return;
+  } else if (t.is_float4()) {
+    enable_fp4_ = true;
+    if (t.lanes() <= 4) {
+      os << GetFP4Type(t);
     } else {
       fail = true;
     }
-    if (!fail) return;
+    return;
   } else if (t == DataType::Bool()) {
     os << "bool";
     return;
@@ -444,7 +522,7 @@ void CodeGenCUDA::PrintVecConstructor(DataType t, std::ostream& os) {
 
 void CodeGenCUDA::PrintVecBinaryOp(const std::string& op, DataType t, PrimExpr lhs, PrimExpr rhs,
                                    std::ostream& os) {  // NOLINT(*)
-  // Delcare the result.
+  // Declare the result.
   std::string sret = name_supply_->FreshName("_");
   this->PrintIndent();
   this->PrintType(t, stream);
@@ -495,9 +573,17 @@ void CodeGenCUDA::PrintVecElemLoad(const std::string& vec, DataType t, int i,
       os << "((" << type_name << ")(" << ac << " >> " << i % 4 * 8 << "))";
     }
   } else if (t.is_float16()) {
-    os << "((half2*)(&(" << vec << "." << access[i / 2] << ")))->" << access[i % 2];
+    if (t.lanes() <= 4) {
+      os << vec << "." << access[i];
+    } else {
+      os << "((half2*)(&(" << vec << "." << access[i / 2] << ")))->" << access[i % 2];
+    }
   } else if (t.is_bfloat16()) {
-    os << "((nv_bfloat162*)(&(" << vec << "." << access[i / 2] << ")))->" << access[i % 2];
+    if (t.lanes() <= 4) {
+      os << vec << "." << access[i];
+    } else {
+      os << "((nv_bfloat162*)(&(" << vec << "." << access[i / 2] << ")))->" << access[i % 2];
+    }
   } else if (t.lanes() > 4 && t.lanes() <= 8) {
     std::string type_name;
     if (t.bits() == 16) {
@@ -517,6 +603,9 @@ void CodeGenCUDA::PrintVecElemLoad(const std::string& vec, DataType t, int i,
     }
     ICHECK(!type_name.empty());
     os << "((" << type_name << "2*)(&(" << vec << "." << access[i / 2] << ")))->" << access[i % 2];
+  } else if (t.is_float4_e2m1fn()) {
+    os << "([](__nv_fp4_storage_t v) { __nv_fp4_e2m1 t; t.__x = v; return t; })((" << vec
+       << ".__x >> " << i * 4 << ") & 0xF)";
   } else {
     os << vec << "." << access[i];
   }
@@ -541,11 +630,20 @@ void CodeGenCUDA::PrintVecElemStore(const std::string& vec, DataType t, int i,
       stream << "(" << value << " << " << i % 4 * 8 << ");\n";
     }
   } else if (t.is_float16()) {
-    stream << "((half2*)(&(" << vec << "." << access[i / 2] << ")))->" << access[i % 2] << " = "
-           << value << ";\n";
+    if (t.lanes() <= 4) {
+      stream << vec << "." << access[i] << " = " << value << ";\n";
+    } else {
+      stream << "((half2*)(&(" << vec << "." << access[i / 2] << ")))->" << access[i % 2] << " = "
+             << value << ";\n";
+    }
+
   } else if (t.is_bfloat16()) {
-    stream << "((nv_bfloat162*)(&(" << vec << "." << access[i / 2] << ")))->" << access[i % 2]
-           << " = " << value << ";\n";
+    if (t.lanes() <= 4) {
+      stream << vec << "." << access[i] << " = " << value << ";\n";
+    } else {
+      stream << "((nv_bfloat162*)(&(" << vec << "." << access[i / 2] << ")))->" << access[i % 2]
+             << " = " << value << ";\n";
+    }
   } else if (t.lanes() > 4 && t.lanes() <= 8) {
     std::string type_name;
     if (t.bits() == 16) {
@@ -646,6 +744,21 @@ void CodeGenCUDA::VisitExpr_(const CastNode* op, std::ostream& os) {
   // Emit simple C-style type conversion.
   if (from_ty.is_scalar()) return CodeGenC::VisitExpr_(op, os);
 
+  if (target_ty.code() == DataType::kFloat8_e4m3fn || target_ty.code() == DataType::kFloat8_e5m2 ||
+      target_ty.code() == DataType::kFloat4_e2m1fn || from_ty.code() == DataType::kFloat8_e4m3fn ||
+      from_ty.code() == DataType::kFloat8_e5m2 || from_ty.code() == DataType::kFloat4_e2m1fn) {
+    std::ostringstream val;
+    if (target_ty.code() == DataType::kBFloat && target_ty.lanes() == 2) {
+      val << "cast_to_nv_bfloat162(" << PrintExpr(op->value) << ")";
+    } else {
+      val << "(";
+      PrintType(target_ty, val);
+      val << ")(" << PrintExpr(op->value) << ")";
+    }
+    os << val.str();
+    return;
+  }
+
   // We could emit make_float4 like calls, but the emitted code looks
   // too compact to read. Emit this as vectorized unary ops.
   std::string sret = name_supply_->FreshName("_");
@@ -670,7 +783,7 @@ void CodeGenCUDA::VisitExpr_(const CastNode* op, std::ostream& os) {
 void CodeGenCUDA::PrintCallExtern(Type ret_type, String global_symbol, const Array<PrimExpr>& args,
                                   bool skip_first_arg, std::ostream& os) {  // NOLINT(*)
   DataType ret_dtype = GetRuntimeDataType(ret_type);
-  if (ret_dtype.is_vector()) {
+  if (ret_dtype.is_fixed_length_vector()) {
     //
     // Emit an unsupported vector call
     //
@@ -940,8 +1053,8 @@ void CodeGenCUDA::VisitExpr_(const CallNode* op, std::ostream& os) {
     var_idmap_[inverse_index_map->initial_indices[1].get()] = "local_id";
 
     os << "for (int local_id = 0; local_id < 8; ++local_id) {\n";
-    os << dst << "[" + this->PrintExpr(dst_ind) + "]"
-       << " = " << src << "[" << src_offset << " + local_id];\n";
+    os << dst << "[" + this->PrintExpr(dst_ind) + "] = " << src << "[" << src_offset
+       << " + local_id];\n";
     os << "}\n";
 
   } else if (op->op.same_as(builtin::mma_fill())) {
@@ -1059,6 +1172,82 @@ void CodeGenCUDA::VisitExpr_(const CallNode* op, std::ostream& os) {
     stream << ": \"l\"((void*)(" << global_buffer << "+" << global_addr << ")), \"r\"((int)"
            << guard << ")\n";
     stream << ");\n";
+  } else if (op->op.same_as(builtin::reinterpret())) {
+    DataType tgt_dtype = op->dtype;
+    DataType src_dtype = op->args[0]->dtype;
+    PrimExpr value = op->args[0];
+
+    // Handle float4_e2m1fn reinterpret
+    if (!src_dtype.is_float4_e2m1fn() && !tgt_dtype.is_float4_e2m1fn()) {
+      return CodeGenC::VisitExpr_(op, os);
+    }
+    if (src_dtype == tgt_dtype ||
+        tgt_dtype.lanes() * tgt_dtype.bits() == src_dtype.lanes() * src_dtype.bits()) {
+      return CodeGenC::VisitExpr_(op, os);
+    }
+    CHECK_EQ(tgt_dtype.lanes(), src_dtype.lanes())
+        << "E2M1 float4 reinterpret expects source and target to have the same number of lanes. "
+        << "Source dtype: " << src_dtype << ", Target dtype: " << tgt_dtype;
+    CHECK_EQ(tgt_dtype.bytes(), src_dtype.bytes())
+        << "E2M1 float4 reinterpret expects source and target to have the same number of bytes. "
+        << "Source dtype: " << src_dtype << ", Target dtype: " << tgt_dtype;
+
+    int lanes = tgt_dtype.lanes();
+
+    int ssa_scope = BeginScope();
+    if (lanes == 1) {
+      // The case of lane=1 is same as the normal reinterpret,
+      // except that we allow the src and dst dtype to have different number of bits.
+      std::string rhs = SSAGetID(PrintExpr(value), src_dtype);
+      os << "(*(";
+      this->PrintType(tgt_dtype, os);
+      os << " *)(&(" << rhs << ")))";
+    } else if (lanes == 2) {
+      if (tgt_dtype.is_float4_e2m1fn()) {
+        // We view the source as an uint16, and then extract bits of two fp4 numbers,
+        // and finally reinterpret the result as fp4x2.
+        value = tir::Call(DataType::UInt(16), tir::builtin::reinterpret(), {value});
+        tir::Var temp_var("temp_var", DataType::UInt(16));
+        value = tir::Let(
+            temp_var, value,
+            tir::Cast(DataType::UInt(8), (temp_var & IntImm(DataType::UInt(16), 0xF)) |
+                                             ((temp_var >> 4) & IntImm(DataType::UInt(16), 0xF0))));
+      } else {
+        value = tir::Cast(DataType::UInt(16),
+                          tir::Call(DataType::UInt(8), tir::builtin::reinterpret(), {value}));
+        tir::Var temp_var("temp_var", DataType::UInt(16));
+        value = tir::Let(temp_var, value,
+                         (temp_var & IntImm(DataType::UInt(16), 0xF)) |
+                             ((temp_var & IntImm(DataType::UInt(16), 0xF0)) << 4));
+      }
+      os << PrintExpr(tir::Call(tgt_dtype, tir::builtin::reinterpret(), {value}));
+    } else if (lanes == 4) {
+      if (tgt_dtype.is_float4_e2m1fn()) {
+        // We view the source as an uint32, and then extract bits of four fp4 numbers,
+        // and finally reinterpret the result as fp4x4.
+        value = tir::Call(DataType::UInt(32), tir::builtin::reinterpret(), {value});
+        tir::Var temp_var("temp_var", DataType::UInt(32));
+        value = tir::Let(temp_var, value,
+                         tir::Cast(DataType::UInt(16),
+                                   (temp_var & IntImm(DataType::UInt(32), 0xF)) |
+                                       ((temp_var >> 4) & IntImm(DataType::UInt(32), 0xF0)) |
+                                       ((temp_var >> 8) & IntImm(DataType::UInt(32), 0xF00)) |
+                                       ((temp_var >> 12) & IntImm(DataType::UInt(32), 0xF000))));
+      } else {
+        value = tir::Cast(DataType::UInt(32),
+                          tir::Call(DataType::UInt(16), tir::builtin::reinterpret(), {value}));
+        tir::Var temp_var("temp_var", DataType::UInt(32));
+        value = tir::Let(temp_var, value,
+                         (temp_var & IntImm(DataType::UInt(32), 0xF)) |
+                             ((temp_var & IntImm(DataType::UInt(32), 0xF0)) << 4) |
+                             ((temp_var & IntImm(DataType::UInt(32), 0xF00)) << 8) |
+                             ((temp_var & IntImm(DataType::UInt(32), 0xF000)) << 12));
+      }
+      os << PrintExpr(tir::Call(tgt_dtype, tir::builtin::reinterpret(), {value}));
+    } else {
+      LOG(FATAL) << "Invalid number of lanes for float4_e2m1fn reinterpret: " << lanes;
+    }
+    EndScope(ssa_scope);
   } else {
     CodeGenC::VisitExpr_(op, os);
   }
@@ -1160,19 +1349,21 @@ void CodeGenCUDA::VisitStmt_(const EvaluateNode* op) {
 }
 
 void CodeGenCUDA::VisitExpr_(const RampNode* op, std::ostream& os) {
-  CHECK_LE(op->lanes, 4) << "ValueError: Ramp of more than 4 lanes is not allowed.";
+  int lanes = op->dtype.lanes();
+  CHECK_LE(lanes, 4) << "ValueError: Ramp of more than 4 lanes is not allowed.";
   PrintVecConstructor(op->dtype, os);
   os << "(";
-  for (int i = 0; i < op->lanes; i++) {
+  for (int i = 0; i < lanes; i++) {
     os << "(" << PrintExpr(op->base) << ")"
        << "+(" << PrintExpr(op->stride) << "*" << i << ")";
-    if (i != op->lanes - 1) os << ", ";
+    if (i != lanes - 1) os << ", ";
   }
   os << ")";
 }
 
 void CodeGenCUDA::VisitExpr_(const BroadcastNode* op, std::ostream& os) {  // NOLINT(*)
-  if ((op->dtype.is_int() || op->dtype.is_uint()) && op->dtype.bits() == 8 && op->lanes == 4) {
+  int lanes = op->dtype.lanes();
+  if ((op->dtype.is_int() || op->dtype.is_uint()) && op->dtype.bits() == 8 && lanes == 4) {
     // make_int8x4
     const int64_t* p = as_const_int(op->value);
     ICHECK(p);
@@ -1190,9 +1381,16 @@ void CodeGenCUDA::VisitExpr_(const BroadcastNode* op, std::ostream& os) {  // NO
     std::string v = PrintExpr(op->value);
     PrintVecConstructor(op->dtype, os);
     os << '(';
-    for (int i = 0; i < op->lanes / 2; ++i) {
-      if (i != 0) os << ", ";
-      os << "__pack_half2(" << v << ", " << v << ")";
+    if (lanes <= 4) {
+      for (int i = 0; i < lanes / 2; ++i) {
+        if (i != 0) os << ", ";
+        os << v << ", " << v;
+      }
+    } else {
+      for (int i = 0; i < lanes / 2; ++i) {
+        if (i != 0) os << ", ";
+        os << "__pack_half2(" << v << ", " << v << ")";
+      }
     }
     os << ')';
     return;
@@ -1202,11 +1400,33 @@ void CodeGenCUDA::VisitExpr_(const BroadcastNode* op, std::ostream& os) {  // NO
     std::string v = PrintExpr(op->value);
     PrintVecConstructor(op->dtype, os);
     os << '(';
-    for (int i = 0; i < op->lanes / 2; ++i) {
-      if (i != 0) os << ", ";
-      os << "__pack_nv_bfloat162(" << v << ", " << v << ")";
+    if (lanes > 4) {
+      for (int i = 0; i < lanes / 2; ++i) {
+        if (i != 0) os << ", ";
+        os << "__pack_nv_bfloat162(" << v << ", " << v << ")";
+      }
+    } else {
+      for (int i = 0; i < lanes; ++i) {
+        if (i != 0) os << ", ";
+        os << v;
+      }
     }
     os << ')';
+    return;
+  }
+
+  if (op->dtype.is_float8() || op->dtype.is_float4()) {
+    int lanes = op->dtype.lanes();
+    ICHECK(lanes == 1 || lanes == 2 || lanes == 4);
+    std::string v = PrintExpr(op->value);
+    // Implicit conversion from float back to fp8
+    PrintType(op->dtype, os);
+    os << "(make_float" << lanes << "(";
+    for (int i = 0; i < lanes; ++i) {
+      if (i != 0) os << ", ";
+      os << "static_cast<float>(" << v << ")";
+    }
+    os << "))";
     return;
   }
 
@@ -1216,7 +1436,7 @@ void CodeGenCUDA::VisitExpr_(const BroadcastNode* op, std::ostream& os) {  // NO
     ICHECK(p);
     int64_t v = *p & 0xF;
 
-    if (op->lanes == 4) {
+    if (lanes == 4) {
       v = (v << 12) | (v << 8) | (v << 4) | v;
       if (op->dtype.is_uint()) {
         os << "(uint16_t)" << v;
@@ -1225,16 +1445,16 @@ void CodeGenCUDA::VisitExpr_(const BroadcastNode* op, std::ostream& os) {  // NO
       }
     } else {
       v = (v << 28) | (v << 24) | (v << 20) | (v << 16) | (v << 12) | (v << 8) | (v << 4) | v;
-      if (op->lanes == 8) {
+      if (lanes == 8) {
         if (op->dtype.is_uint()) {
           os << "(uint)" << v;
         } else {
           os << "(int)" << v;
         }
-      } else if (op->lanes == 16 || op->lanes == 32) {
+      } else if (lanes == 16 || lanes == 32) {
         PrintVecConstructor(op->dtype, os);
         os << '(';
-        for (int i = 0; i < op->lanes / 8; ++i) {
+        for (int i = 0; i < lanes / 8; ++i) {
           if (i != 0) os << ", ";
           if (op->dtype.is_uint()) {
             os << "(uint)" << v;
@@ -1256,7 +1476,7 @@ void CodeGenCUDA::VisitExpr_(const BroadcastNode* op, std::ostream& os) {  // NO
   std::string v = PrintExpr(op->value);
   PrintVecConstructor(op->dtype, os);
   os << '(';
-  for (int i = 0; i < op->lanes; ++i) {
+  for (int i = 0; i < lanes; ++i) {
     if (i != 0) os << ", ";
     os << v;
   }
@@ -1265,7 +1485,7 @@ void CodeGenCUDA::VisitExpr_(const BroadcastNode* op, std::ostream& os) {  // NO
 
 void CodeGenCUDA::VisitExpr_(const SelectNode* op, std::ostream& os) {
   // Non-vector cases.
-  if (!op->dtype.is_vector()) {
+  if (!op->dtype.is_fixed_length_vector()) {
     CodeGenC::VisitExpr_(op, os);
     return;
   }
@@ -1306,6 +1526,12 @@ inline void PrintConst(const FloatImmNode* op, std::ostream& os, CodeGenCUDA* p)
   // Type code is kBFloat
   if (op->dtype.is_bfloat16()) {
     os << "__float2bfloat16_rn";
+    os << '(' << std::scientific << op->value << 'f' << ')';
+    return;
+  }
+  // Type code is kFloat8_e5m2 or kE4M4Float
+  if (op->dtype.is_float8() || op->dtype.is_float4()) {
+    p->PrintType(op->dtype, os);
     os << '(' << std::scientific << op->value << 'f' << ')';
     return;
   }
@@ -1444,15 +1670,10 @@ void CodeGenCUDA::PrintVecElemLoadExpr(DataType t, int i, const std::string& val
       PrintVecConstructor(t, os);
       os << '(';
     }
-    if (i % 2 == 0) {
-      os << "__pack_half2(" << value;
+    if (i == t.lanes() - 1) {
+      os << value << ")";
     } else {
-      os << "," << value << ")";
-      if (i != t.lanes() - 1) {
-        os << ",";
-      } else {
-        os << ")";
-      }
+      os << value << ",";
     }
     return;
   }
@@ -1462,15 +1683,10 @@ void CodeGenCUDA::PrintVecElemLoadExpr(DataType t, int i, const std::string& val
       PrintVecConstructor(t, os);
       os << '(';
     }
-    if (i % 2 == 0) {
-      os << "__pack_bfloat162(" << value;
+    if (i == t.lanes() - 1) {
+      os << value << ")";
     } else {
-      os << "," << value << ")";
-      if (i != t.lanes() - 1) {
-        os << ",";
-      } else {
-        os << ")";
-      }
+      os << value << ",";
     }
     return;
   }

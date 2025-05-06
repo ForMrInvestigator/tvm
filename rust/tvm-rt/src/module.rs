@@ -48,7 +48,7 @@ pub struct ModuleNode {
 
 crate::external! {
     #[name("runtime.RuntimeEnabled")]
-    fn runtime_enabled(target: CString) -> i32;
+    fn runtime_enabled(target: CString) -> bool;
 
     #[name("runtime.ModuleLoadFromFile")]
     fn load_from_file(file_name: CString, format: CString) -> Module;
@@ -57,7 +57,7 @@ crate::external! {
     fn save_to_file(module: Module, name: TString, fmt: TString);
 
     // TODO(@jroesch): we need to refactor this
-    #[name("tvm.relay.module_export_library")]
+    #[name("tvm.relax.module_export_library")]
     fn export_library(module: Module, file_name: TString);
 }
 
@@ -121,8 +121,7 @@ impl Module {
     /// Checks if a target device is enabled for a module.
     pub fn enabled(&self, target: &str) -> bool {
         let target = CString::new(target).unwrap();
-        let enabled = runtime_enabled(target).unwrap();
-        enabled != 0
+        runtime_enabled(target).unwrap()
     }
 
     /// Returns the underlying module handle.

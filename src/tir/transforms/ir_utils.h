@@ -155,7 +155,7 @@ inline DataType APIType(DataType t) {
   ICHECK(!t.is_void()) << "Cannot pass void type through packed API.";
   if (t.is_handle()) return t;
   ICHECK_EQ(t.lanes(), 1) << "Cannot pass vector type through packed API.";
-  if (t.is_uint() || t.is_int()) return DataType::Int(64);
+  if (t.is_bool() || t.is_uint() || t.is_int()) return DataType::Int(64);
   ICHECK(t.is_float());
   return DataType::Float(64);
 }
@@ -233,16 +233,6 @@ Region ConvertRegion(const MatchBufferRegion& match_buffer, const Region& region
  * \return shape The shape considering buffer strides.
  */
 Array<PrimExpr> GetBufferAllocationShape(const Buffer& buffer);
-
-/*!
- * \brief Check if a given PrimFunc originated from a TE schedule.
- *
- * Internally this checks for the `from_legacy_te_schedule` attr of the PrimFunc.
- *
- * \param f PrimFunc to check
- * \return Whether or not the PrimFunc was created from a te schedule
- */
-Bool IsFromLegacyTESchedule(PrimFunc f);
 
 /*!
  * \brief Context helper to update domain map within conditional scope.
@@ -342,8 +332,7 @@ using StorageAlignAnnotation = Array<StorageAlignTuple>;
  * \param body The stmt to collect.
  * \return The result dict from buffer var to storage align annotations.
  */
-std::unordered_map<Var, StorageAlignAnnotation, ObjectPtrHash, ObjectPtrEqual>
-CollectStorageAlignAnnotation(const Stmt& body);
+std::unordered_map<Var, StorageAlignAnnotation> CollectStorageAlignAnnotation(const Stmt& body);
 /*!
  * \brief Split string separated by "," to get wmma fragment dimension size.
  * \param  shape_str The string to split.

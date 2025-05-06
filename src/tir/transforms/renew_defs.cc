@@ -76,17 +76,13 @@ class RenewDefMutator : public StmtExprMutator {
     // Visit body
     Stmt body = generator(func->body);
     // Recreate function
-    auto n = make_object<PrimFuncNode>(*func.get());
-    n->params = std::move(params);
-    n->buffer_map = std::move(buffer_map);
-    n->body = std::move(body);
-    return PrimFunc(n);
+    return PrimFunc(params, body, func->ret_type, buffer_map, func->attrs, func->span);
   }
 
  private:
   Stmt operator()(Stmt stmt) {
     // override StmtMutator::operator() to disable copy_on_write
-    // Since this pass tries to explict create a new function rather than update the existing one
+    // Since this pass tries to explicit create a new function rather than update the existing one
     allow_copy_on_write_ = false;
     return VisitStmt(stmt);
   }

@@ -50,7 +50,8 @@ class ThreadBindingUnifier : public StmtExprMutator {
       return StmtMutator::VisitStmt_(op);
     }
     IterVar old_iter_var = Downcast<IterVar>(op->node);
-    return UnifyThreadBindingImpl(op, old_iter_var->var, old_iter_var, old_iter_var->dom);
+    return UnifyThreadBindingImpl(op, old_iter_var->var, old_iter_var,
+                                  Range::FromMinExtent(IntImm(op->value->dtype, 0), op->value));
   }
 
   Stmt VisitStmt_(const ForNode* op) final {
@@ -184,14 +185,9 @@ class ThreadBindingUnifier : public StmtExprMutator {
 };
 
 PrimFunc UnifyThreadBinding(PrimFunc f) {
-  // Only apply this pass to TIR that is not from TE schedules
-  if (!IsFromLegacyTESchedule(f)) {
-    PrimFuncNode* fptr = f.CopyOnWrite();
-    fptr->body = ThreadBindingUnifier::Unify(std::move(f->body));
-    return f;
-  } else {
-    return f;
-  }
+  PrimFuncNode* fptr = f.CopyOnWrite();
+  fptr->body = ThreadBindingUnifier::Unify(std::move(f->body));
+  return f;
 }
 
 namespace transform {

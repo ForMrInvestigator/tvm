@@ -25,7 +25,6 @@
 #include <tvm/node/object_path.h>
 #include <tvm/node/reflection.h>
 #include <tvm/node/structural_hash.h>
-#include <tvm/runtime/container/adt.h>
 #include <tvm/runtime/profiling.h>
 #include <tvm/runtime/registry.h>
 #include <tvm/target/codegen.h>
@@ -298,6 +297,16 @@ uint64_t StructuralHash::operator()(const ObjectRef& object) const {
   return SHashHandlerDefault().Hash(object, false);
 }
 
+void SHashHandlerIgnoreNDArray::DispatchSHash(const ObjectRef& object, bool map_free_vars) {
+  ICHECK(object.defined());
+  if (auto ndarray = object.as<runtime::NDArray::Container>()) {
+    SHashReducer hash_reduce(this, map_free_vars);
+    NDArrayHash(ndarray, &hash_reduce, false);
+  } else {
+    SHashHandlerDefault::DispatchSHash(object, map_free_vars);
+  }
+}
+
 // SEQualReduce traits for runtime containers.
 struct StringObjTrait {
   static constexpr const std::nullptr_t VisitAttrs = nullptr;
@@ -334,32 +343,6 @@ TVM_STATIC_IR_FUNCTOR(ReprPrinter, vtable)
       auto* op = static_cast<const runtime::StringObj*>(node.get());
       p->stream << '"' << support::StrEscape(op->data, op->size) << '"';
     });
-
-struct ADTObjTrait {
-  static constexpr const std::nullptr_t VisitAttrs = nullptr;
-
-  static void SHashReduce(const runtime::ADTObj* key, SHashReducer hash_reduce) {
-    hash_reduce(key->tag);
-    hash_reduce(static_cast<uint64_t>(key->size));
-    for (uint32_t i = 0; i < key->size; ++i) {
-      hash_reduce((*key)[i]);
-    }
-  }
-
-  static bool SEqualReduce(const runtime::ADTObj* lhs, const runtime::ADTObj* rhs,
-                           SEqualReducer equal) {
-    if (lhs == rhs) return true;
-    if (lhs->tag != rhs->tag) return false;
-    if (lhs->size != rhs->size) return false;
-
-    for (uint32_t i = 0; i < lhs->size; ++i) {
-      if (!equal((*lhs)[i], (*rhs)[i])) return false;
-    }
-    return true;
-  }
-};
-
-TVM_REGISTER_REFLECTION_VTABLE(runtime::ADTObj, ADTObjTrait);
 
 struct ModuleNodeTrait {
   static constexpr const std::nullptr_t VisitAttrs = nullptr;

@@ -137,7 +137,7 @@ TVM_STATIC_IR_FUNCTOR(IRDocsifier, vtable)
       return TIR(d, "Ramp")->Call({
           d->AsDoc<ExprDoc>(ramp->base, ramp_p->Attr("base")),
           d->AsDoc<ExprDoc>(ramp->stride, ramp_p->Attr("stride")),
-          LiteralDoc::Int(ramp->lanes, ramp_p->Attr("lanes")),
+          d->AsDoc<ExprDoc>(ramp->lanes, ramp_p->Attr("lanes")),
       });
     });
 
@@ -146,7 +146,7 @@ TVM_STATIC_IR_FUNCTOR(IRDocsifier, vtable)
       return TIR(d, "Broadcast")
           ->Call({
               d->AsDoc<ExprDoc>(bc->value, bc_p->Attr("value")),
-              LiteralDoc::Int(bc->lanes, bc_p->Attr("lanes")),
+              d->AsDoc<ExprDoc>(bc->lanes, bc_p->Attr("lanes")),
           });
     });
 
@@ -297,11 +297,6 @@ TVM_STATIC_IR_FUNCTOR(IRDocsifier, vtable)
     });
 
 TVM_STATIC_IR_FUNCTOR(IRDocsifier, vtable)
-    .set_dispatch<tir::Any>("", [](tir::Any any, ObjectPath p, IRDocsifier d) -> Doc {
-      return TIR(d, "Any")->Call({});
-    });
-
-TVM_STATIC_IR_FUNCTOR(IRDocsifier, vtable)
     .set_dispatch<tir::Reduce>("", [](tir::Reduce r, ObjectPath p, IRDocsifier d) -> Doc {
       ExprDoc combiner = d->AsDoc<ExprDoc>(r->combiner, p->Attr("combiner"));
       ExprDoc source = d->AsDoc<ExprDoc>(r->source, p->Attr("source"));
@@ -415,7 +410,6 @@ TVM_SCRIPT_REPR(tir::CallNode, ReprPrintTIR);
 TVM_SCRIPT_REPR(tir::ShuffleNode, ReprPrintTIR);
 TVM_SCRIPT_REPR(tir::CommReducerNode, ReprPrintTIR);
 TVM_SCRIPT_REPR(tir::IndexMapNode, ReprPrintTIR);
-TVM_SCRIPT_REPR(tir::AnyNode, ReprPrintTIR);
 TVM_SCRIPT_REPR(tir::ReduceNode, ReprPrintTIR);
 
 }  // namespace printer
